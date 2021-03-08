@@ -1,78 +1,289 @@
-install.packages("rpart.plot")
-install.packages("e1071")
-
-
 ### Libraries
 library(data.table)
 library(tidyverse)
 library(R.utils)
-library("rpart") 
-library("rpart.plot")
-library("e1071") 
+library(rpart) 
+library(rpart.plot)
+library(e1071)
+library(lattice)
+library(plyr)
+library(caret)
+library(ROCR)
 
 ### Read Data
-column_names = read.csv("C:\\Users\\Ziko Nguyen\\Dropbox\\20.Ziko\\Ziko\\Master 2\\UE07-Big Data\\Project\\big_data\\Data\\names.csv", header=FALSE) # Column names!
-dt = fread("C:\\Users\\Ziko Nguyen\\Dropbox\\20.Ziko\\Ziko\\Master 2\\UE07-Big Data\\Project\\big_data\\Data\\census-income.data.gz", col.names=column_names[,2])
-df = as_tibble(dt)
+setwd(".\\Code")
+
+column_names <- read.csv("..\\Data\\names.csv", header=FALSE) # Column names!
+dt <- fread("..\\Data\\census-income.data.gz", col.names=column_names[,2],
+            stringsAsFactors=TRUE)
+training_df <- tibble(dt)
+dt <- fread("..\\Data\\census-income.test.gz", col.names=column_names[,2],
+            stringsAsFactors=TRUE)
+test_df <- tibble(dt)
 
 ### Tidying data
-df = df %>% 
+
+
+training_df <- training_df %>% 
+    unique() %>% # Dropping duplicates
+    mutate(AHRSPAY = AHRSPAY/100) # wage per hour in unit of dollars
+
+training_df[training_df == '?'] = NA # Replace "?" by NA
+
+
+test_df <- test_df %>% 
   unique() %>% # Dropping duplicates
   mutate(AHRSPAY = AHRSPAY/100) # wage per hour in unit of dollars
 
-df[df == '?'] = NA # Replace "?" by NA
+test_df[test_df == '?'] = NA # Replace "?" by NA
 
 
-decision_tree <- rpart(TOTINC  ~ AAGE+ACLSWKR+AHGA+AHRSPAY+AMARITL+
-                         ARACE+AWKSTAT+PARENT+PRCITSHP+	
-                         SEOTR , method="class", data=dt, control=rpart.control(minsplit=1), parms=list(split="information")) 
+ag_df <- rbind(training_df, test_df) # One df for statistical description
 
+
+# The instance weight (MARSUPWT) indicates the number of people in the population
+# that each record represents due to stratified sampling.
+# To do real analysis and derive conclusions, this field must be used.
+# This attribute should *not* be used in the classifiers, so it is
+# set to "ignore" in this file.
+
+
+### Statistical description
+
+summary(ag_df)
+
+# NA's - Drop all because there is more NA's than not NA
+# MIGMTR1 - 147485
+# MIGMTR3 - 147485
+# MIGMTR4 - 147485
+# MIGSUN - 147485
+
+ag_df <- ag_df %>%
+  select(-c(MIGMTR1, MIGMTR3, MIGMTR4, MIGSUN, MARSUPWT, year))
+
+training_df <- training_df %>%
+  select(-c(MIGMTR1, MIGMTR3, MIGMTR4, MIGSUN, MARSUPWT, year))
+
+test_df <- test_df %>%
+  select(-c(MIGMTR1, MIGMTR3, MIGMTR4, MIGSUN, MARSUPWT, year))
+
+# Num but Factor ADTIND, ADTOCC, SEOTR, VETYN + Label change 0, 1 for income
+
+ag_df <- ag_df %>%
+  mutate(ADTIND = as.factor(ADTIND)) %>%
+  mutate(ADTOCC = as.factor(ADTOCC)) %>%
+  mutate(SEOTR = as.factor(SEOTR)) %>%
+  mutate(VETYN = as.factor(VETYN)) %>%
+  mutate(TOTINC = fct_recode(TOTINC, "0" = "- 50000.", "1" = "50000+." ))
+
+training_df <- training_df %>%
+  mutate(ADTIND = as.factor(ADTIND)) %>%
+  mutate(ADTOCC = as.factor(ADTOCC)) %>%
+  mutate(SEOTR = as.factor(SEOTR)) %>%
+  mutate(VETYN = as.factor(VETYN)) %>%
+  mutate(TOTINC = fct_recode(TOTINC, "0" = "- 50000.", "1" = "50000+." ))
+
+test_df <- test_df %>%
+  mutate(ADTIND = as.factor(ADTIND)) %>%
+  mutate(ADTOCC = as.factor(ADTOCC)) %>%
+  mutate(SEOTR = as.factor(SEOTR)) %>%
+  mutate(VETYN = as.factor(VETYN)) %>%
+  mutate(TOTINC = fct_recode(TOTINC, "0" = "- 50000.", "1" = "50000+." ))
+
+
+# Histograms
+
+nums <- unlist(lapply(ag_df, is.numeric))
+
+ggplot(gather(ag_df[ , nums]), aes(value)) + 
+  geom_histogram(bins = 10) + 
+  facet_wrap(~key, scales = 'free_x')
+
+# 3 Capital Variables. They have basically the same behavior, so we group it
+# in only one variable CAP.CHANGE
+
+ggplot(gather(ag_df[ , c("CAPGAIN", "CAPLOSS", "DIVVAL")]), aes(value)) + 
+  geom_histogram(bins = 10) + 
+  facet_wrap(~key, scales = 'free_x')
+
+ag_df <- ag_df %>%
+  mutate(CAP.CHANGE = CAPGAIN - CAPLOSS + DIVVAL) %>%
+  select(-c(CAPGAIN, CAPLOSS, DIVVAL))
+
+training_df <- training_df %>%
+  mutate(CAP.CHANGE = CAPGAIN - CAPLOSS + DIVVAL) %>%
+  select(-c(CAPGAIN, CAPLOSS, DIVVAL))
+
+test_df <- test_df %>%
+  mutate(CAP.CHANGE = CAPGAIN - CAPLOSS + DIVVAL) %>%
+  select(-c(CAPGAIN, CAPLOSS, DIVVAL))
+
+
+ggplot(gather(ag_df[ , "CAP.CHANGE"]), aes(value)) + 
+  geom_histogram(bins = 10) + 
+  facet_wrap(~key, scales = 'free_x')
+
+# distribution factors
+
+not_nums <- unlist(lapply(ag_df, is.factor))
+
+ggplot(gather(ag_df[ , not_nums]), aes(value)) + 
+  geom_histogram(stat="count") + 
+  facet_wrap(~key, scales = 'free_x')
+
+str(ag_df[ , not_nums])
+
+# PEFNTVTY, PEMNTVTY, PENATVTY, GRINST - Lot of Factor All US much bigger
+# VETQVA - Not in universe 292162!
+# DROP NA
+
+summary(ag_df[ , c("PEFNTVTY", "PEMNTVTY", "PENATVTY", "GRINST")])
+
+ag_df <- ag_df %>%
+  select(-c(PEFNTVTY, PEMNTVTY, PENATVTY, GRINST, VETQVA)) %>%
+  drop_na()
+
+training_df <- training_df %>%
+  select(-c(PEFNTVTY, PEMNTVTY, PENATVTY, GRINST, VETQVA)) %>%
+  drop_na()
+
+test_df <- test_df %>%
+  select(-c(PEFNTVTY, PEMNTVTY, PENATVTY, GRINST, VETQVA)) %>%
+  drop_na()
+
+
+# Correlation Matrix between numerical variables
+
+nums <- unlist(lapply(ag_df, is.numeric))
+res <- cor(ag_df[ , nums])
+round(res, 2)
+
+# WKSWORK with NOEMP highly correlated
+
+boxplot(WKSWORK~TOTINC, data=ag_df) #WKSWORK is highly correlated with Income
+
+boxplot(NOEMP~TOTINC, data=ag_df) #NOEMP is highly correlated with Income
+
+# Correlation between Categorical and Income
+
+qplot(TOTINC, data = ag_df, fill=ACLSWKR) +
+  facet_grid(.~ACLSWKR)
+
+qplot(TOTINC, data = ag_df, fill=GRINREG) +
+  facet_grid(.~GRINREG)
+
+
+#### Logistic Regression
+
+
+logit_model <- glm(TOTINC~., data=training_df, binomial(link="logit"))
+
+summary(logit_model)
+
+pseudo_r2 = 1 - (summary_model$null/summary_model$deviance)
+
+varImp(logit_model)
+
+predict_logit_model <- predict(logit_model, newdata = test_df, 
+                                 type = "response")
+
+predict_logit_model_factor <- as.factor(if_else(prediction_test > 0.5, 1, 0))
+
+
+### Results
+confusionMatrix(predict_logit_model_factor, test_df$TOTINC)
+
+prop.table(table(test_df$TOTINC, predict_logit_model > 0.5))
+
+# 92.85% True < 50,000; 2.4% True > 50,000
+# Type II Error 3.9% < 50,000 but in reality >50,000
+# Type I Error 0,88% > 50,000 but in reality < 50,000
+
+# ROC and AUC
+
+
+pred_logit <- prediction(predict_logit_model, test_df$TOTINC)
+
+performance(pred_logit, "tpr", "fpr")
+
+auc <- performance(pred_logit, "auc")
+auc <- unlist(slot(auc, "y.values"))
+auc
+
+perf <- performance(pred_logit, "tpr", "fpr")
+
+plot(perf, lwd=2, xlab="False Positive Rate (FPR)", 
+    ylab="True Positive Rate (TPR)")
+abline(a=0, b=1, col="gray50", lty=3)
+
+### Decision Tree
+
+decision_tree <- rpart(TOTINC  ~., 
+                      method="class", data=training_df, 
+                      control=rpart.control(minsplit=1), 
+                      parms=list(split="information"))
+
+predict_tree <- predict(decision_tree, newdata=test_df, type='class')
 
 summary(decision_tree)
+
 rpart.plot(decision_tree, type=2, extra=1) 
 
+# Results
+confusionMatrix(predict_tree, test_df$TOTINC)
 
-###PREDICT
-new_customer<-data.frame(AAGE=45, ACLSWKR="Private",ADTIND=30 ,ADTOCC=33, AHGA="Bachelors degree(BA AB BS)", AHRSPAY =0,
-                         AHSCOL="Not in universe", AMARITL= "Never married",AMJIND="Hospital services", AMJOCC="Professional specialty", 
-                         ARACE="White", AREORGN="All other", ASEX="Female", AUNMEM="Not in universe",AUNTYPE="Not in universe", 
-                         AWKSTAT="Full-time schedules", CAPGAIN=0, CAPLOSS=0, DIVVAL=0, FILESTAT="Single",GRINREG="Not in universe",
-                         GRINST="Not in universe", HHDFMX="Nonfamily householder",HHDREL="Householder",MARSUPWT="1095.21",MIGMTR1="Nonmover", 
-                         MIGMTR3="Nonmover", MIGMTR4=" Nonmover", MIGSAME="Yes", MIGSUN="Not in universe", NOEMP=6, PARENT="Not in universe",
-                         PEFNTVTY="Germany",PEMNTVTY="El-Salvador", PENATVTY="Mexico", PRCITSHP="Native- Born in the United States", SEOTR=0,
-                         VETQVA="Not in universe", VETYN=0, WKSWORK=52, year=95)
+prop.table(table(test_df$TOTINC, predict_tree))
 
-new_customer
+# 92.98% True < 50,000; 1.83% True > 50,000
+# Type II Error 4.44% < 50,000 but in reality >50,000
+# Type I Error 0,76% > 50,000 but in reality < 50,000
 
+# ROC and AUC
 
-predict(decision_tree,newdata=new_customer,type="class")
-####PREDICT observation 123####
-new_customer2<-data.frame(AAGE=45, ACLSWKR="Self-employed-incorporated",ADTIND=30 ,ADTOCC=33, AHGA="Prof school degree (MD DDS DVM LLB JD)", AHRSPAY =0,
-                         AHSCOL="Not in universe", AMARITL= "Married-civilian spouse present",AMJIND="Hospital services", AMJOCC="Professional specialty", 
-                         ARACE="White", AREORGN="All other", ASEX="Female", AUNMEM="Not in universe",AUNTYPE="Not in universe", 
-                         AWKSTAT="Full-time schedules", CAPGAIN=0, CAPLOSS=0, DIVVAL=0, FILESTAT="Single",GRINREG="Not in universe",
-                         GRINST="Not in universe", HHDFMX="Nonfamily householder",HHDREL="Householder",MARSUPWT="1095.21",MIGMTR1="Nonmover", 
-                         MIGMTR3="Nonmover", MIGMTR4=" Nonmover", MIGSAME="Yes", MIGSUN="Not in universe", NOEMP=6, PARENT="Not in universe",
-                         PEFNTVTY="Germany",PEMNTVTY="El-Salvador", PENATVTY="Mexico", PRCITSHP="Foreign born- U S citizen by naturalization", SEOTR=0,
-                         VETQVA="Not in universe", VETYN=0, WKSWORK=52, year=95)
+pred_tree <- prediction(c(predict_tree), c(test_df$TOTINC))
 
-new_customer2
+performance(pred_tree, "tpr", "fpr")
+
+auc <- performance(pred_tree, "auc")
+auc <- unlist(slot(auc, "y.values"))
+auc
+
+perf <- performance(pred_tree, "tpr", "fpr")
+
+plot(perf, lwd=2, xlab="False Positive Rate (FPR)", 
+     ylab="True Positive Rate (TPR)")
+abline(a=0, b=1, col="gray50", lty=3)
 
 
-predict(decision_tree,newdata=new_customer2,type="class")
 
-####	Naïve Bayes with R###
-dt$AHGA2<-ifelse(dt$AHGA=="10th grade, 11th grade, 12th grade no diploma, 1st 2nd 3rd or 4th grade, 5th or 6th grade, 7th and 8th grade
-9th grade, Associates degree-academic program, Associates degree-occup /vocational,Children, High school graduate, Less than 1st grade,Some college but no degree","10th grade, 11th grade, 12th grade no diploma, 1st 2nd 3rd or 4th grade, 5th or 6th grade, 7th and 8th grade
-9th grade, Associates degree-academic program, Associates degree-occup /vocational,Children, High school graduate, Less than 1st grade,Some college but no degree","Bachelors degree(BA AB BS),Doctorate degree(PhD EdD), Masters degree(MA MS MEng MEd MSW MBA), Prof school degree (MD DDS DVM LLB JD)") 
+####	Naïve Bayes
 
-training_data <- as.data.frame(dt[1:dim(dt)[1]-1,]) 
-test_data <- as.data.frame(dt[dim(dt)[1],])
+model_naive <- naiveBayes(TOTINC  ~., training_df)
 
-test_data
+predict_naive <- predict(model_naive, newdata=test_df)
 
-model <- naiveBayes(TOTINC  ~ AAGE+ACLSWKR+AHGA+AHRSPAY+AMARITL+
-                         ARACE+AWKSTAT+PARENT+PRCITSHP+SEOTR, training_data)
-model
-#write.csv(dt,"C:\\Users\\Ziko Nguyen\\Dropbox\\20.Ziko\\Ziko\\Master 2\\UE07-Big Data\\Project\\big_data\\data.csv", row.names=FALSE)
+# Results
+confusionMatrix(predict_naive, test_df$TOTINC)
+
+prop.table(table(test_df$TOTINC, predict_naive))
+
+# 74.64% True < 50,000; 5.45% True > 50,000
+# Type II Error 0.81% < 50,000 but in reality >50,000
+# Type I Error 19,09% > 50,000 but in reality < 50,000
+
+# ROC and AUC
+
+pred_naive <- prediction(c(predict_naive), c(test_df$TOTINC))
+
+performance(pred_naive, "tpr", "fpr")
+
+auc <- performance(pred_naive, "auc")
+auc <- unlist(slot(auc, "y.values"))
+auc
+
+perf <- performance(pred_naive, "tpr", "fpr")
+
+plot(perf, lwd=2, xlab="False Positive Rate (FPR)", 
+     ylab="True Positive Rate (TPR)")
+abline(a=0, b=1, col="gray50", lty=3)
 
