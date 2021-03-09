@@ -90,13 +90,18 @@ test_df <- test_df %>%
   mutate(VETYN = as.factor(VETYN)) %>%
   mutate(TOTINC = fct_recode(TOTINC, "0" = "- 50000.", "1" = "50000+." ))
 
-
 # Histograms
+ag_df <- ag_df %>%
+  mutate(ADTIND = as.factor(ADTIND)) %>%
+  mutate(ADTOCC = as.factor(ADTOCC)) %>%
+  mutate(SEOTR = as.factor(SEOTR)) %>%
+  mutate(VETYN = as.factor(VETYN)) %>%
+  mutate(TOTINC = as.factor(TOTINC))
 
 nums <- unlist(lapply(ag_df, is.numeric))
 
 ggplot(gather(ag_df[ , nums]), aes(value)) + 
-  geom_histogram(bins = 10) + 
+  geom_histogram(bins = 15) + 
   facet_wrap(~key, scales = 'free_x')
 
 # 3 Capital Variables. They have basically the same behavior, so we group it
@@ -178,16 +183,19 @@ qplot(TOTINC, data = ag_df, fill=GRINREG) +
 
 logit_model <- glm(TOTINC~., data=training_df, binomial(link="logit"))
 
-summary(logit_model)
+sum_logit <- summary(logit_model)
 
-pseudo_r2 = 1 - (summary_model$null/summary_model$deviance)
+pseudo_r2 = 1 - (sum_logit$deviance/sum_logit$null)
+
+t = sum_logit$null - sum_logit$deviance
 
 varImp(logit_model)
 
 predict_logit_model <- predict(logit_model, newdata = test_df, 
                                  type = "response")
 
-predict_logit_model_factor <- as.factor(if_else(prediction_test > 0.5, 1, 0))
+predict_logit_model_factor <- as.factor(if_else(predict_logit_model > 0.5,
+                                                1, 0))
 
 
 ### Results
